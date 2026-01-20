@@ -753,6 +753,8 @@ class ProcessTask:
         self.worker.start()
         self.pipe.send([ProcessWrapper.SPECS, None])
         self.state_dim, self.action_dim, self.name = self.pipe.recv()
+        # lazily fetch the action_space from the worker to mirror single-process tasks
+        self.action_space = self.get_action_space()
 
     def step(self, action):
         self.pipe.send([ProcessWrapper.STEP, action])
@@ -775,6 +777,10 @@ class ProcessTask:
     def get_task(self):
         self.pipe.send([ProcessWrapper.GET_TASK, None])
         return self.pipe.recv()
+    
+    def set_current_task_info(self, some_key, some_value):
+        data_package = [some_key, some_value]
+        self.pipe.send([ProcessWrapper.SET_CURR_TASK_INFO, data_package])
 
     def get_all_tasks(self, requires_task_label):
         self.pipe.send([ProcessWrapper.GET_ALL_TASKS, requires_task_label])
@@ -782,6 +788,10 @@ class ProcessTask:
     
     def random_tasks(self, num_tasks, requires_task_label):
         self.pipe.send([ProcessWrapper.RANDOM_TASKS, [num_tasks, requires_task_label]])
+        return self.pipe.recv()
+    
+    def get_action_space(self):
+        self.pipe.send([ProcessWrapper.ACTION_SPACE, None])
         return self.pipe.recv()
 
 class ProcessWrapper(mp.Process):
@@ -794,11 +804,19 @@ class ProcessWrapper(mp.Process):
     GET_TASK = 6
     GET_ALL_TASKS = 7
     RANDOM_TASKS = 8
+    SET_CURR_TASK_INFO = 9
+    ACTION_SPACE = 10
     def __init__(self, pipe, task_fn, log_dir):
         mp.Process.__init__(self)
         self.pipe = pipe
         self.task_fn = task_fn
         self.log_dir = log_dir
+
+    def __getstate__(self):
+        return self.__dict__
+
+    def __setstate__(self, d):
+        self.__dict__ = d
 
     def run(self):
         np.random.seed()
@@ -827,6 +845,10 @@ class ProcessWrapper(mp.Process):
                 self.pipe.send(task.get_all_tasks(data))
             elif op == self.RANDOM_TASKS:
                 self.pipe.send(task.random_tasks(*data))
+            elif op == self.SET_CURR_TASK_INFO:
+                self.pipe.send(task.set_current_task_info(data[0], data[1]))
+            elif op == self.ACTION_SPACE:
+                self.pipe.send(task.action_space)
             else:
                 raise Exception('Unknown command')
 
@@ -838,6 +860,7 @@ class ParallelizedTask:
         else:
             self.tasks = [ProcessTask(task_fn, log_dir) for _ in range(num_workers)]
         self.state_dim = self.tasks[0].state_dim
+        self.action_space = self.tasks[0].action_space
         self.action_dim = self.tasks[0].action_dim
         self.name = self.tasks[0].name
         self.single_process = single_process
@@ -864,6 +887,10 @@ class ParallelizedTask:
         for task in self.tasks:
             task.set_task(task_info)
 
+    def set_current_task_info(self, some_key, some_value):
+        for task in self.tasks:
+            task.set_current_task_info(some_key, some_value)
+
     def get_task(self, all_workers=False):
         if not all_workers:
             return self.tasks[0].get_task()
@@ -875,3 +902,6 @@ class ParallelizedTask:
     
     def random_tasks(self, num_tasks, requires_task_label):
         return self.tasks[0].random_tasks(num_tasks, requires_task_label)
+    
+    def get_action_space(self):
+        return self.tasks[0].action_space

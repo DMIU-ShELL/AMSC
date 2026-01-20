@@ -242,7 +242,19 @@ def ppo_ll_mctgraph(name, args):
     config.eval_interval = 10
     config.task_ids = np.arange(num_tasks).tolist()
 
-    agent = LLAgent(config)
+    # Detect module
+    config.detect_reference_num = 50
+    config.detect_num_samples = 128
+    config.detect_emb_dist_threshold = 24
+    config.detect_frequency = 1
+    config.detect_fn = lambda input_dim, action_dim: Detect(config.detect_reference_num, input_dim, action_dim, config.detect_num_samples, one_hot=True, normalized=True)
+    config.detect_topk = 3  # Pick top 3 masks in pre-selection
+    config.select_frequency = 5
+
+    config.warmup_steps = 10000  # (Steps after which we stop changing selection)
+    config.wte_momentum = 0.5    # (The alpha for the moving average)
+
+    agent = DetectLLAgent(config)
     config.agent_name = agent.__class__.__name__
     tasks = agent.config.cl_tasks_info
     config.cl_num_learn_blocks = 1
@@ -382,7 +394,7 @@ def ppo_ll_mctgraph(name, args):
     # targeted exploration for new task (the next task, after seen tasks, in the curriculum)
     # (i.e., agent's behaviour on the new task before any training is performed).
     te_num_tasks_seen = args.te_num_tasks_seen
-    agent = LLAgent(config)
+    agent = DetectLLAgent(config)
     model_path = '{0}/task_stats/{1}-{2}-model-{3}-run-1-task-{4}.bin'.format(\
         args.path, agent_name, tag, env_name, te_num_tasks_seen)
     agent = load_agent(agent, model_path, te_num_tasks_seen)

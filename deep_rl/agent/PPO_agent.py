@@ -423,3 +423,73 @@ class LLAgent(PPOContinualLearnerAgent):
             set_model_task(self.network, task_idx)
         return
 
+class DetectLLAgent(LLAgent):
+    def __init__(self, config):
+        LLAgent.__init__(self, config)
+        self.embedding_table = {}   # contains Wasserstein task embeddings that the agent has experienced so far.
+
+        # Construct detect module
+        self.detect = config.detect_fn(
+            self.task.state_dim, 
+            self.task.action_dim
+        )
+
+        # Set detect reference distribution
+        self.detect.set_reference(
+            self.task.state_dim,
+            config.detect_reference_num,
+            self.task.action_dim
+        )
+
+        # Pre-calculate embedding dim
+        self.task_emb_size  = self.detect.precalculate_embedding_size(config.detect_reference_num, self.task.state_dim, self.task.action_dim)
+        self.new_task_emb = None#torch.zeros(self.task_emb_size)
+        for task_idx, _ in enumerate(self.config.cl_tasks_info):
+            self.embedding_table[task_idx] = None
+
+    def extract_sar(self):
+        """Extracts (state, action, reward) tuples from the replay buffer
+        and preprocesses them for further use.
+
+        - Handles both discrete and continuous action spaces.
+        - Ensures consistent shapes for concatenation.
+        """
+
+        states, actions, rewards, _, _ = self.data_buffer.sample()
+        processed_data = []
+
+        for state, action, reward in zip(states, actions, rewards):
+            # move tensors to numpy
+            if isinstance(state, torch.Tensor):
+                state = state.cpu().numpy()
+            if isinstance(action, torch.Tensor):
+                action = action.cpu().numpy()
+            if isinstance(reward, torch.Tensor):
+                reward = reward.cpu().numpy()
+
+            state_array = np.array(state).ravel()
+            action_array = np.array(action)
+
+            # Ensure correct shape for action
+            if isinstance(self.task.action_space, gym.spaces.Discrete):
+                action_array = action_array.reshape(1,)
+            else:
+                action_array = action_array.reshape(self.task.action_dim)
+
+            reward_array = np.array(reward).reshape(1,)
+
+            sar_entry = np.concatenate([state_array, action_array, reward_array])
+            processed_data.append(sar_entry)
+
+        return np.array(processed_data)
+
+    def compute_task_embedding(self, sar_data, action_space_size):
+        """
+        Function for computing the task embedding based on the current
+        batch of SAR data derived from the replay buffer.
+        """
+
+        task_embedding = self.detect.lwe(sar_data, action_space_size)
+        self.new_task_emb = task_embedding
+        self.task_emb_size = len(task_embedding)
+        return task_embedding

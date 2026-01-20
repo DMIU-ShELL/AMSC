@@ -107,7 +107,7 @@ def ppo_ll_mctgraph(name, args):
     config.seed = args.seed
     random_seed(config.seed)
     exp_id = '-{0}-mask-{1}-{2}'.format(config.seed, args.new_task_mask, args.exp_id)
-    log_name = name + '-ppo' + '-' + config.cl_preservation + exp_id
+    log_name = args.pathheader + '/' + name + '-ppo' + '-' + config.cl_preservation + exp_id
     config.log_dir = get_default_log_dir(log_name)
     config.num_workers = 4
     # get num_tasks from env_config
@@ -148,7 +148,19 @@ def ppo_ll_mctgraph(name, args):
     config.eval_interval = 10
     config.task_ids = np.arange(num_tasks).tolist()
 
-    agent = LLAgent(config)
+    # Detect module
+    config.detect_reference_num = 50
+    config.detect_num_samples = 128
+    config.detect_emb_dist_threshold = 24
+    config.detect_frequency = 1
+    config.detect_fn = lambda input_dim, action_dim: Detect(config.detect_reference_num, input_dim, action_dim, config.detect_num_samples, one_hot=True, normalized=True)
+    config.detect_topk = 3  # Pick top 3 masks in pre-selection
+    config.select_frequency = 5
+
+    config.warmup_steps = 10000  # (Steps after which we stop changing selection)
+    config.wte_momentum = 0.5    # (The alpha for the moving average)
+
+    agent = DetectLLAgent(config)
     config.agent_name = agent.__class__.__name__
     tasks = agent.config.cl_tasks_info
     config.cl_num_learn_blocks = 1
@@ -177,13 +189,19 @@ if __name__ == '__main__':
     parser.add_argument('--env_name', help='name of the evaluation environment. ' \
         'minigrid and ctgraph currently supported', default='ctgraph')
     parser.add_argument('--env_config_path', help='path to environment config', \
-        default='./env_configs/ct8.json')
-    parser.add_argument('--exp_id', help='experiment id', default='ct8', type=str)
+        default='./env_configs/ct28/seed1/meta_ctgraph_ct28_interleaved.json')
+        #./env_configs/ct28/seed1/meta_ctgraph_ct28_random.json
+        #./env_configs/ct28/seed1/meta_ctgraph_ct14_half_1.json
+        #./env_configs/ct28/seed1/meta_ctgraph_ct14_half_2.json
+        #./env_configs/ct28/seed1/meta_ctgraph_ct14_md.json
+        #./env_configs/ct8.json
+    parser.add_argument('--exp_id', help='experiment id', default='ct14_md', type=str)
     parser.add_argument('--max_steps', help='maximum number of training steps per task.', \
         default=51200*2, type=int)
     parser.add_argument('--new_task_mask', help='', \
         default='random', type=str)
     parser.add_argument('--seed', help='seed for the experiment', default=8379, type=int)
+    parser.add_argument('--pathheader', '--p', '-p', help='experiment header to log path for launcher.py', type=str, default='')
     args = parser.parse_args()
 
     if args.env_name == 'ctgraph':
