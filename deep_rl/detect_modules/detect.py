@@ -23,9 +23,29 @@ import matplotlib.pyplot as plt
 import random
 import torch.optim as optim
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
+from concurrent.futures import ThreadPoolExecutor
 
 class Detect:
-    def __init__(self, reference_num, input_dim, action_dim, num_samples, reference=200,  device='cuda', title = '', num_iter=10, one_hot=True, normalized=True, demo=True):
+    def __init__(
+        self,
+        reference_num,
+        input_dim,
+        action_dim,
+        num_samples,
+        reference=200,
+        device='cuda',
+        title='',
+        num_iter=10,
+        one_hot=True,
+        normalized=True,
+        demo=True,
+        embedding_method='lwe',
+        swe_num_projections=128,
+        swe_num_quantiles=128,
+        swe_num_workers=1,
+        swe_seed=98,
+        swe_normalize_embedding=True,
+    ):
         assert reference is not None, f'Reference not found.'
         self.ref = None
         self.device = device
@@ -38,6 +58,18 @@ class Detect:
         self.input_dim = input_dim
         self.reference_num = reference_num
         self.action_dim = action_dim
+        self.embedding_method = str(embedding_method).lower()
+        if self.embedding_method not in ('lwe', 'swe'):
+            raise ValueError(
+                "embedding_method must be either 'lwe' or 'swe', got "
+                f"{embedding_method}"
+            )
+        self.swe_num_projections = int(swe_num_projections)
+        self.swe_num_quantiles = int(swe_num_quantiles)
+        self.swe_num_workers = max(int(swe_num_workers), 1)
+        self.swe_seed = int(swe_seed)
+        self.swe_normalize_embedding = bool(swe_normalize_embedding)
+        self.swe_directions = None
 
         self._b = None
         self._a_cache = {}  # batch_size -> a
@@ -58,10 +90,12 @@ class Detect:
         '''A setter method, for manually setting and updating the reference for calculating
         the tasks embeddings.'''
         torch.manual_seed(98)
-        reference = torch.rand(some_reference_num, (a_task_observation_dim + some_action_dim + 1), device=self.device)#Plus one which is the reward.
+        feature_dim = a_task_observation_dim + some_action_dim + 1
+        reference = torch.rand(some_reference_num, feature_dim, device=self.device)#Plus one which is the reward.
         self.ref = reference.float()
         ref_size = self.ref.shape[0]
         self._b = torch.full((ref_size,), 1.0 / ref_size, device=self.device)
+        self._set_swe_directions(feature_dim)
 
     def get_reference(self):
         '''A getter method for accessing the reference which is used to calculate the task
@@ -85,8 +119,23 @@ class Detect:
 
     def precalculate_embedding_size(self, a_reference_num, an_inputdim, some_action_dim):
         '''A method for calculating the embedding dimension '''
-        pre_calc_embedding_size = a_reference_num * (an_inputdim + some_action_dim + 1)#Plus one which is the reward.
+        if self.embedding_method == 'swe':
+            pre_calc_embedding_size = self.swe_num_projections * self.swe_num_quantiles
+        else:
+            pre_calc_embedding_size = a_reference_num * (an_inputdim + some_action_dim + 1)#Plus one which is the reward.
         return pre_calc_embedding_size
+
+    def _set_swe_directions(self, feature_dim):
+        generator = torch.Generator(device='cpu')
+        generator.manual_seed(self.swe_seed)
+        directions = torch.randn(
+            self.swe_num_projections,
+            int(feature_dim),
+            generator=generator,
+            dtype=torch.float32,
+        )
+        directions = F.normalize(directions, dim=1, eps=1e-8)
+        self.swe_directions = directions.to(self.device)
 
     def preprocess_dataset(self, X, action_space_size):
         # X can be numpy or torch; keep it torch
@@ -119,6 +168,9 @@ class Detect:
 
     @torch.no_grad()
     def lwe(self, X, action_space_size, reg=0.05, numItermax=2000):
+        if self.embedding_method == 'swe':
+            return self.swe(X, action_space_size)
+
         X = self.preprocess_dataset(X, action_space_size)
 
         # Ensure ref is on device
@@ -139,6 +191,46 @@ class Detect:
         f = (f - ref) / (ref_size ** 0.5)
 
         return f.reshape(-1)  # 1D tensor on GPU
+
+    @torch.no_grad()
+    def _swe_chunk_embedding(self, X, directions):
+        projections = X @ directions.T
+        projections = torch.sort(projections, dim=0).values
+
+        if projections.shape[0] != self.swe_num_quantiles:
+            # Interpolate each projection's empirical quantile function to a
+            # fixed support size, so embeddings have stable dimensionality.
+            projection_channels = projections.T.unsqueeze(0)
+            projections = F.interpolate(
+                projection_channels,
+                size=self.swe_num_quantiles,
+                mode='linear',
+                align_corners=True,
+            ).squeeze(0).T
+
+        return projections.T.reshape(-1)
+
+    @torch.no_grad()
+    def swe(self, X, action_space_size):
+        X = self.preprocess_dataset(X, action_space_size)
+
+        if self.swe_directions is None or self.swe_directions.shape[1] != X.shape[1]:
+            self._set_swe_directions(X.shape[1])
+
+        directions = self.swe_directions
+        num_workers = min(self.swe_num_workers, directions.shape[0])
+        if num_workers <= 1:
+            emb = self._swe_chunk_embedding(X, directions)
+        else:
+            chunks = [chunk for chunk in torch.chunk(directions, num_workers, dim=0) if chunk.numel() > 0]
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                parts = list(executor.map(lambda chunk: self._swe_chunk_embedding(X, chunk), chunks))
+            emb = torch.cat(parts, dim=0)
+
+        emb = emb / max(self.swe_num_projections * self.swe_num_quantiles, 1) ** 0.5
+        if self.swe_normalize_embedding:
+            emb = F.normalize(emb, dim=0, eps=1e-8)
+        return emb
       
     def calculate_lwes_distance(self, lwe1, lwe2):
         '''Calculates the Euclidian Distance of the old vs the new embedding

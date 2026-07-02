@@ -53,7 +53,39 @@ Note:
 - In the continualworld curriculum (CW10), the random initialization mask agent implemented in this branch is the MASK RI\_C (continuous values mask). The sample command to run MASK RI_\D in CW10 can be found in the `exp_maskri_discrete_mask_cw10` git branch.
 
 ## Analysis
-The analysis pipeline for Mask-SC can be executed using the `eval_XXX.py` and `ft_auc_analysis.py` scripts. Single-task experts can be run via the 
+The analysis pipeline for Mask-SC can be executed using the `eval_XXX.py` and
+`ft_auc_analysis.py` scripts.
+
+## AMSC selection ablations
+
+AMSC standardizes each current-task similarity vector before applying
+temperature-scaled sparsemax. Two selector ablations are available in the
+CTGraph, MiniGrid, and Continual World trainers:
+
+```bash
+# NoNorm: sparsemax over raw cosine similarities
+--selection_no_normalization
+
+# Shuffled: preserve AMSC's support size but randomly assign it to priors
+--selection_shuffle_support
+```
+
+The shuffled selector uses a dedicated RNG derived from the RL seed. It does
+not change the random stream used by PPO, SAC, or the environments. Both flags
+can be combined, although the primary ablations use one flag at a time.
+
+Examples:
+
+```bash
+python train_ctgraph.py ll_supermask --new_task_mask linear_comb \
+  --selection_no_normalization
+
+python train_minigrid.py ll_supermask --new_task_mask linear_comb \
+  --selection_shuffle_support --disable_task_label_input
+
+python train_continualworld.py ll_supermask --new_task_mask linear_comb \
+  --selection_shuffle_support --disable_task_label_input
+```
 
 
 #### BibTex

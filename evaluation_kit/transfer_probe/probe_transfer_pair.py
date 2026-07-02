@@ -151,7 +151,6 @@ def build_config(env_name, env_config_path, seed, max_steps, exp_id, new_task_ma
         one_hot=True,
         normalized=True,
     )
-    config.detect_topk = 3
     config.select_frequency = 5
     config.warmup_steps = 10000
     config.wte_momentum = 0.5

@@ -248,7 +248,6 @@ def ppo_ll_mctgraph(name, args):
     config.detect_emb_dist_threshold = 24
     config.detect_frequency = 1
     config.detect_fn = lambda input_dim, action_dim: Detect(config.detect_reference_num, input_dim, action_dim, config.detect_num_samples, one_hot=True, normalized=True)
-    config.detect_topk = 3  # Pick top 3 masks in pre-selection
     config.select_frequency = 5
 
     config.warmup_steps = 10000  # (Steps after which we stop changing selection)
